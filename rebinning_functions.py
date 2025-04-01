@@ -1,0 +1,141 @@
+import cupy as cp
+import numpy as np
+from numba import cuda
+from tqdm import tqdm
+
+def interpolate_2d(grid, x, y):
+    """2D linear interpolation on GPU using CuPy."""
+    x_floor = cp.floor(x).astype(cp.int32)
+    y_floor = cp.floor(y).astype(cp.int32)
+
+    x_floor = cp.clip(x_floor, 0, grid.shape[0] - 2)
+    y_floor = cp.clip(y_floor, 0, grid.shape[1] - 2)
+
+    x_ceil = x_floor + 1
+    y_ceil = y_floor + 1
+
+    x_p = x - x_floor
+    y_p = y - y_floor
+
+    a = grid[x_floor, y_floor]
+    b = grid[x_floor, y_ceil]
+    c = grid[x_ceil, y_floor]
+    d = grid[x_ceil, y_ceil]
+
+    p1 = (1 - x_p) * a + x_p * c
+    p2 = (1 - x_p) * b + x_p * d
+    return (1 - y_p) * p1 + y_p * p2
+
+
+def rebin_curved_to_flat_detector(args, proj_curved_helic):
+    """Rebin cylindrically curved detector projections to flat detector projections."""
+    proj_curved_helic = cp.asarray(proj_curved_helic, dtype=cp.float32)
+    n_projs, nv, nu = proj_curved_helic.shape
+    print(f"Projection shape: {proj_curved_helic.shape}")
+
+    proj_flat_helic = cp.zeros_like(proj_curved_helic, dtype=cp.float32)
+    x_det = (cp.arange(nu) - args.nu / 2) * args.du + 0.5 * args.du
+    z_det = (cp.arange(nv) - args.nv / 2) * args.dv + 0.5 * args.dv
+    dphi_curved = 2 * cp.arctan(args.du / (2 * args.dsd))
+
+    for i_angle in tqdm(range(n_projs), desc='Rebin curved to flat detector'):
+        proj_curved = proj_curved_helic[i_angle]
+
+        z_grid, x_grid = cp.meshgrid(z_det, x_det, indexing='ij')
+        y_grid = cp.full_like(z_grid, args.dsd)
+
+        p_on_flat_det = cp.stack((x_grid, y_grid, z_grid), axis=-1)
+        p_norm = cp.linalg.norm(p_on_flat_det, axis=-1)
+        p_on_curved_det = p_on_flat_det / p_norm[:, :, None] * args.dsd
+        phi_on_curved_det = cp.arcsin(p_on_curved_det[:, :, 0] / args.dsd)
+
+        shift_x = args.nu - args.det_central_element[0]
+        shift_y = args.nv - args.det_central_element[1]
+
+        i_phi = phi_on_curved_det / dphi_curved + shift_x
+        i_z = p_on_curved_det[:, :, 2] / args.dv + shift_y
+
+        result = interpolate_2d(proj_curved, i_z, i_phi)
+        proj_flat_helic[i_angle] = result
+
+        if i_angle % 10 == 9:
+            cp.get_default_memory_pool().free_all_blocks()
+    return proj_flat_helic
+
+@cuda.jit
+def interpolate_kernel(curr_proj, v_det_elements, v_precise, weights, rebinned_projection):
+    i_u = cuda.threadIdx.x + cuda.blockIdx.x * cuda.blockDim.x
+    i_z = cuda.threadIdx.y + cuda.blockIdx.y * cuda.blockDim.y
+
+    if i_u < curr_proj.shape[1] and i_z < v_precise.shape[0]:
+        v_value = v_precise[i_z, i_u, 0]
+        v_interp = 0.0
+        for i in range(len(v_det_elements) - 1):
+            if v_det_elements[i] <= v_value <= v_det_elements[i + 1]:
+                ratio = (v_value - v_det_elements[i]) / (v_det_elements[i + 1] - v_det_elements[i])
+                v_interp = curr_proj[i, i_u] * (1 - ratio) + curr_proj[i + 1, i_u] * ratio
+                break
+
+        rebinned_projection[i_z, i_u] = v_interp * weights[i_z, i_u]
+
+
+def rebin_helical_to_fan_beam_trajectory(args, proj_helic):
+    """Rebin helical projections to fan-beam geometry using Numba CUDA."""
+    proj_rebinned = np.zeros((args.rotview, args.nu, args.nz_rebinned), dtype=np.float32)
+
+    z_positions_start = float(args.z_positions[0][0]) if isinstance(args.z_positions[0], list) else float(
+        args.z_positions[0])
+    distance = 0.5 * args.pitch
+    half_nu = args.nu / 2
+    dsd_sq = args.dsd ** 2
+    scale_factor = 1.0 / (args.dso * args.dsd)
+    x_term = ((np.arange(args.nu) - half_nu + 0.5) * args.du) ** 2
+    v_det_elements = (np.arange(args.nv) - args.nv / 2 + 0.5) * args.dv
+
+    z_poses_resampled = z_positions_start + (np.arange(args.nz_rebinned) * args.dv_rebinned)
+
+    # Define CUDA kernel configuration
+    threads_per_block = (32, 32)
+    blocks_per_grid_x = (args.nu + threads_per_block[0] - 1) // threads_per_block[0]
+    blocks_per_grid_y = (args.nz_rebinned + threads_per_block[1] - 1) // threads_per_block[1]
+    blocks_per_grid = (blocks_per_grid_x, blocks_per_grid_y)
+
+    v_det_elements_gpu = cuda.to_device(v_det_elements)
+
+    for s_angle in tqdm(range(args.rotview), desc='Rebinning Projections', unit='angle'):
+        z_poses_valid = np.asarray(args.z_positions[s_angle::args.rotview], dtype=np.float64)
+        lower_lims = z_poses_valid - distance
+        upper_lims = z_poses_valid + distance
+
+        for i_proj in range(len(z_poses_valid)):
+            curr_z_pos = float(z_poses_valid[i_proj])
+            i_lower = max(0, int((lower_lims[i_proj] - z_positions_start) / args.dv_rebinned))
+            i_upper = min(args.nz_rebinned, int(np.ceil((upper_lims[i_proj] - z_positions_start) / args.dv_rebinned)))
+
+            if i_lower >= i_upper:
+                continue
+
+            curr_proj_idx = s_angle + i_proj * args.rotview
+            curr_proj = proj_helic[curr_proj_idx]
+
+            z_slice_indices = np.arange(i_lower, i_upper)
+            deltaZ = (curr_z_pos - z_poses_resampled[z_slice_indices])[:, None]
+
+            v_precise = deltaZ * ((x_term + dsd_sq) * scale_factor)
+            v_precise = np.expand_dims(v_precise, axis=2)
+            weights = np.sqrt(x_term[None, :] + dsd_sq) / np.sqrt(x_term[None, :] + v_precise[:, :, 0] ** 2 + dsd_sq)
+            rebinned_projection = np.zeros((len(z_slice_indices), args.nu), dtype=np.float64)
+
+            curr_proj_gpu = cuda.to_device(curr_proj)
+            v_precise_gpu = cuda.to_device(v_precise)
+            weights_gpu = cuda.to_device(weights)
+            rebinned_projection_gpu = cuda.to_device(rebinned_projection)
+
+            interpolate_kernel[blocks_per_grid, threads_per_block](
+                curr_proj_gpu, v_det_elements_gpu, v_precise_gpu, weights_gpu, rebinned_projection_gpu
+            )
+
+            rebinned_projection = rebinned_projection_gpu.copy_to_host()
+            proj_rebinned[s_angle, :, z_slice_indices] = rebinned_projection
+
+    return proj_rebinned
