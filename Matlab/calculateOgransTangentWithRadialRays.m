@@ -1,15 +1,15 @@
 function [organ_range, organ_z_range] = calculateOgransTangentWithRadialRays(mask_file)
-% 使用径向射线法计算器官切线角度范围
-% 输入参数:
-%   mask_file - 器官分割掩膜文件路径 (NIfTI格式)
-% 输出参数:
-%   organ_range - 计算得到的器官角度范围
-%   organ_z_range - 器官在Z轴上的范围
+% Calculate organ tangent angle range using radial ray method
+% Input parameters:
+%   mask_file - Organ segmentation mask file path (NIfTI format)
+% Output parameters:
+%   organ_range - Calculated organ angle range
+%   organ_z_range - Organ range along Z-axis
 
-    % 读取掩膜文件
+    % Read mask file
     mask_nii = niftiread(mask_file);
     
-    % 计算Z轴范围
+    % Calculate Z-axis range
     slice_sums = squeeze(sum(sum(mask_nii > 0, 1), 2));
     non_zero_slices = find(slice_sums > 0);
     
@@ -19,72 +19,72 @@ function [organ_range, organ_z_range] = calculateOgransTangentWithRadialRays(mas
         organ_z_range = [non_zero_slices(1), non_zero_slices(end)];
     end
     
-    % 找到最大面积的切片
+    % Find slice with maximum area
     [~, slice_index] = max(slice_sums);
     
-    % 顺时针旋转掩膜270度（逆时针旋转90度）
+    % Rotate mask clockwise by 270 degrees (counterclockwise by 90 degrees)
     mask_nii = rot90(mask_nii, 3);
     
-    % 提取最大面积切片
+    % Extract slice with maximum area
     mask_slice = mask_nii(:, :, slice_index);
     
-    % 确保切片是二值图像
+    % Ensure slice is binary image
     if ~islogical(mask_slice)
         organ_mask = mask_slice > 0;
     else
         organ_mask = mask_slice;
     end
     
-    % 获取图像尺寸
+    % Get image dimensions
     [rows, cols] = size(organ_mask);
     
-    % 确定图像中心点
+    % Determine image center point
     center_x = cols / 2;
     center_y = rows / 2;
     
-    % 径向射线检测
+    % Radial ray detection
     [ray_mask_intersections, ray_angles, boundary_points] = performRadialRayDetection(organ_mask, center_x, center_y);
     
-    % 分析射线-掩膜交叉结果，找到切线点
+    % Analyze ray-mask intersection results to find tangent points
     [left_tangent_angle, right_tangent_angle] = ...
         findBottomTangentPoints(ray_mask_intersections, ray_angles, boundary_points, center_x, center_y, rows, cols);
     
-    % 计算角度差和最终范围
+    % Calculate angle difference and final range
     angle_diff = abs(right_tangent_angle - left_tangent_angle);
     if angle_diff > 180
         angle_diff = 360 - angle_diff;
     end
     
-    organ_range = angle_diff * 1.2; % 增加20%安全边界
+    organ_range = angle_diff * 1.2; % Add 20% safety margin
     organ_range = min(180, organ_range);
 end
 
 function [ray_mask_intersections, ray_angles, boundary_points] = performRadialRayDetection(organ_mask, center_x, center_y)
-% 执行径向射线检测
+% Perform radial ray detection
     [rows, cols] = size(organ_mask);
     
-    % 定义角度步长
+    % Define angle step size
     angle_step = 1;
     ray_angles = 0:angle_step:(360-angle_step);
     num_rays = length(ray_angles);
     
-    % 计算最大射线长度
+    % Calculate maximum ray length
     max_radius = max([center_x, center_y, cols-center_x, rows-center_y]) * 1.5;
     
-    % 初始化结果
+    % Initialize results
     ray_mask_intersections = zeros(1, num_rays);
     boundary_points = cell(1, num_rays);
     
-    % 对每个角度发射射线
+    % Cast rays for each angle
     for i = 1:num_rays
         angle_deg = ray_angles(i);
         angle_rad = deg2rad(angle_deg);
         
-        % 计算射线方向
+        % Calculate ray direction
         dx = cos(angle_rad);
         dy = sin(angle_rad);
         
-        % 沿射线采样点
+        % Sample points along the ray
         intersection_points = [];
         
         for r = 1:max_radius
@@ -117,19 +117,19 @@ end
 
 function [left_tangent_angle, right_tangent_angle] = ...
     findBottomTangentPoints(ray_mask_intersections, ray_angles, boundary_points, center_x, center_y, rows, cols)
-% 基于射线检测结果找到切线点
+% Find tangent points based on ray detection results
 
-    % 找到所有相交射线的连续区间
+    % Find continuous intervals of all intersecting rays
     intersecting_indices = find(ray_mask_intersections == 1);
     if isempty(intersecting_indices)
-        error('没有射线与掩膜相交');
+        error('No rays intersect with the mask');
     end
     
-    % 分析连续区间的边界
+    % Analyze boundaries of continuous intervals
     consecutive_groups = findConsecutiveGroups(intersecting_indices);
     
     if length(consecutive_groups) == 1
-        % 单一连续区域
+        % Single continuous region
         group = consecutive_groups{1};
         left_boundary_idx = group(1);
         right_boundary_idx = group(end);
@@ -138,14 +138,14 @@ function [left_tangent_angle, right_tangent_angle] = ...
         right_tangent_angle = ray_angles(right_boundary_idx);
         
     elseif length(consecutive_groups) >= 2
-        % 多个区域 - 选择最大的两个区域的外侧边界
+        % Multiple regions - select outer boundaries of the two largest regions
         group_sizes = cellfun(@length, consecutive_groups);
         [~, sorted_idx] = sort(group_sizes, 'descend');
         
         group1 = consecutive_groups{sorted_idx(1)};
         group2 = consecutive_groups{sorted_idx(2)};
         
-        % 确定左右侧
+        % Determine left and right sides
         center1 = mean(ray_angles(group1));
         center2 = mean(ray_angles(group2));
         
@@ -163,7 +163,7 @@ function [left_tangent_angle, right_tangent_angle] = ...
 end
 
 function consecutive_groups = findConsecutiveGroups(indices)
-% 找到连续的索引组
+% Find consecutive index groups
     consecutive_groups = {};
     if isempty(indices)
         return;
@@ -182,7 +182,7 @@ function consecutive_groups = findConsecutiveGroups(indices)
     
     consecutive_groups{end+1} = current_group;
     
-    % 处理跨越360度边界的情况
+    % Handle cases crossing the 360-degree boundary
     if length(consecutive_groups) > 1
         first_group = consecutive_groups{1};
         last_group = consecutive_groups{end};
