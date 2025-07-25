@@ -25,7 +25,6 @@ def read_dicom(args):
         'nv': 64,
         'du': 1.2858393,
         'dv': 1.0947227,
-        # 'dv_rebinned': 0.6,
         'dv_rebinned': 1,
         'det_central_element': [369.625, 32.5],
         'dso': 595,
@@ -40,10 +39,8 @@ def read_dicom(args):
 
     args.ddo = args.dsd - args.dso
     args.pitch = (z_positions[2304] - z_positions[0]).item() if len(z_positions) > 2304 else 0
-    # 修改这里：确保 nz_rebinned 是正数
     z_range = abs(float(z_positions[-1]) - float(z_positions[0]))
     if args.dv_rebinned <= 0:
-        # 如果 dv_rebinned 是负数或零，使用默认值
         args.dv_rebinned = 1
     args.nz_rebinned = max(1, int(z_range / abs(args.dv_rebinned)))
 
