@@ -4,10 +4,8 @@ import pandas as pd
 import json
 import tifffile
 
-
 def load_tiff_stack(file):
     '''
-
     :param file: Path object describing the location of the file
     :return: a numpy array of the volume
     '''
@@ -19,7 +17,6 @@ def load_tiff_stack(file):
 
 def load_tiff_stack_with_metadata(file):
     '''
-
     :param file: Path object describing the location of the file
     :return: a numpy array of the volume, a dict with the metadata
     '''
@@ -36,11 +33,9 @@ def load_tiff_stack_with_metadata(file):
         metadata = None
     return data, metadata
 
-
 def save_to_tiff_stack(array, file):
     '''
-
-    :param array: Array to save
+    :p aram array: Array to save
     :param file: Path object to save to
     '''
     if not file.parent.is_dir():
@@ -54,7 +49,6 @@ def save_to_tiff_stack(array, file):
 def save_to_tiff_stack_with_metadata(array, file, metadata):
     '''
     Save a stack of images as a TIFF file with metadata
-
     :param array: Numpy array to save
     :param file: Path object to save to
     :param metadata: Dictionary with metadata
@@ -72,7 +66,6 @@ def save_to_tiff_stack_with_metadata(array, file, metadata):
         bigtiff=array.nbytes > 2**32-1  # Use BigTIFF for files > 4GB
     )
 
-
 def save_to_tiff_stack(array, file):
     '''
 
@@ -86,10 +79,8 @@ def save_to_tiff_stack(array, file):
     else:
         imsave(file, array, plugin='tifffile', check_contrast=False)
 
-
 def save_to_tiff_stack_with_metadata(array, file, metadata):
     '''
-
     :param array:
     :param file:
     :return:
@@ -111,10 +102,8 @@ def save_to_tiff_stack_with_metadata(array, file, metadata):
             memmap_stack[t] = array[t, :, :]
             memmap_stack.flush()
 
-
 def load_csv(file):
     '''
-
     :param file: Path object describing the location of the file
     :return: pandas dataframe containing the information from the file
     '''
@@ -124,10 +113,8 @@ def load_csv(file):
         data = pd.read_csv(file)
         return data
 
-
 def save_to_json(params, file):
     '''
-
     :param params: parameter dict
     :param file: path to a file to save to
     :return:
@@ -137,10 +124,8 @@ def save_to_json(params, file):
     with open(file, 'w') as f:
         json.dump(params, f, indent=2)
 
-
 def load_from_json(file):
     '''
-
     :param file: path to a file to load
     :return: contents of the file
     '''
